@@ -36,6 +36,12 @@ export interface ProcessEdge {
     count: number;
     /** Average milliseconds from source event to target event (null = no data). */
     avgDuration: number | null;
+    /**
+     * Set to true by computeLayout when this edge creates a cycle (back-edge
+     * in the DFS spanning tree).  Back-edges are rendered as curved arcs so
+     * that loops in the process flow are visually distinct from forward transitions.
+     */
+    isBackEdge?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,10 +207,14 @@ export class Visual implements IVisual {
      * Assign (posX, posY) to each node using a left-to-right layered layout.
      *
      * Algorithm:
-     *   1. Identify root nodes (no incoming edges).
-     *   2. BFS from roots – assign layers (depth from nearest root).
-     *   3. Nodes still at layer=-1 are isolated; place them on layer 0.
-     *   4. Within each layer, spread nodes evenly on the vertical axis.
+     *   1. Build adjacency list.
+     *   2. Detect back-edges (cycle-creating edges) via iterative DFS.
+     *      Back-edges are flagged on the edge object (isBackEdge = true).
+     *   3. Identify root nodes – nodes with no incoming *forward* edge.
+     *   4. BFS from roots using only forward edges; DAG merge nodes receive
+     *      the maximum (longest-path) layer across all incoming paths.
+     *   5. Nodes still at layer=-1 are isolated; place them on layer 0.
+     *   6. Within each layer, spread nodes evenly on the vertical axis.
      */
     public computeLayout(
         nodes: Map<string, ProcessNode>,
@@ -212,9 +222,62 @@ export class Visual implements IVisual {
         viewWidth: number,
         viewHeight: number
     ): void {
-        // 1. Find roots
-        const hasIncoming = new Set<string>(edges.map(e => e.targetId));
-        const roots = Array.from(nodes.keys()).filter(id => !hasIncoming.has(id));
+        // 1. Build adjacency list
+        const adjacency = new Map<string, string[]>();
+        edges.forEach(e => {
+            if (!adjacency.has(e.sourceId)) adjacency.set(e.sourceId, []);
+            adjacency.get(e.sourceId)!.push(e.targetId);
+        });
+
+        // 2. Detect back-edges via iterative DFS (gray/black colouring)
+        //    A back-edge is an edge whose target is still "gray"
+        //    (currently on the DFS stack), meaning it leads to an ancestor.
+        const backEdgeKeys = new Set<string>();
+        {
+            type DfsFrame = { id: string; neighbors: string[]; idx: number };
+            // 0 = unvisited, 1 = in current DFS path, 2 = finished
+            const color = new Map<string, number>();
+
+            const dfsFrom = (startId: string): void => {
+                const stack: DfsFrame[] = [];
+                color.set(startId, 1);
+                stack.push({ id: startId, neighbors: adjacency.get(startId) ?? [], idx: 0 });
+
+                while (stack.length > 0) {
+                    const frame = stack[stack.length - 1];
+                    if (frame.idx < frame.neighbors.length) {
+                        const nbrId = frame.neighbors[frame.idx++];
+                        const c = color.get(nbrId) ?? 0;
+                        if (c === 1) {
+                            // Target is on the current DFS stack → back-edge (cycle)
+                            backEdgeKeys.add(`${frame.id}|||${nbrId}`);
+                        } else if (c === 0) {
+                            color.set(nbrId, 1);
+                            stack.push({ id: nbrId, neighbors: adjacency.get(nbrId) ?? [], idx: 0 });
+                        }
+                    } else {
+                        color.set(frame.id, 2);
+                        stack.pop();
+                    }
+                }
+            };
+
+            nodes.forEach((_, id) => {
+                if ((color.get(id) ?? 0) === 0) dfsFrom(id);
+            });
+        }
+
+        // Mark back-edges on the edge objects so the renderer can draw them
+        // as curved arcs instead of straight lines.
+        edges.forEach(e => {
+            e.isBackEdge = backEdgeKeys.has(`${e.sourceId}|||${e.targetId}`);
+        });
+
+        // 3. Find roots: nodes with no incoming *forward* (non-back) edge
+        const hasIncomingForward = new Set<string>();
+        edges.forEach(e => { if (!e.isBackEdge) hasIncomingForward.add(e.targetId); });
+        const roots = Array.from(nodes.keys()).filter(id => !hasIncomingForward.has(id));
+
         if (roots.length === 0) {
             // Fully cyclic graph – pick the node with the most outgoing edges as root
             const outDegree = new Map<string, number>();
@@ -223,7 +286,9 @@ export class Visual implements IVisual {
             roots.push(best);
         }
 
-        // 2. BFS layer assignment
+        // 4. BFS layer assignment (forward edges only)
+        //    When a node is reached via multiple paths we keep the *deepest*
+        //    (longest-path) layer so merge nodes are placed correctly.
         const visited = new Set<string>();
         const queue: string[] = [];
 
@@ -233,18 +298,14 @@ export class Visual implements IVisual {
             queue.push(id);
         });
 
-        // Build adjacency list for O(1) neighbour lookup
-        const adjacency = new Map<string, string[]>();
-        edges.forEach(e => {
-            if (!adjacency.has(e.sourceId)) adjacency.set(e.sourceId, []);
-            adjacency.get(e.sourceId)!.push(e.targetId);
-        });
-
         while (queue.length > 0) {
             const currentId = queue.shift()!;
             const currentLayer = nodes.get(currentId)!.layer;
 
             for (const targetId of adjacency.get(currentId) ?? []) {
+                // Never follow back-edges during layer assignment
+                if (backEdgeKeys.has(`${currentId}|||${targetId}`)) continue;
+
                 const target = nodes.get(targetId);
                 if (!target) continue;
 
@@ -253,13 +314,13 @@ export class Visual implements IVisual {
                     visited.add(targetId);
                     queue.push(targetId);
                 } else if (target.layer <= currentLayer) {
-                    // Push target further right to break visual back-edges
+                    // DAG merge node reached via a longer path – push it right
                     target.layer = currentLayer + 1;
                 }
             }
         }
 
-        // 3. Fix isolated nodes
+        // 5. Fix isolated nodes
         nodes.forEach(node => { if (node.layer === -1) node.layer = 0; });
 
         // 4. Group by layer and assign positions
@@ -308,23 +369,27 @@ export class Visual implements IVisual {
 
         this.clearSvg(width, height);
 
-        // ── Defs (arrow marker) ─────────────────────────────────────────────
+        // ── Defs (arrow markers) ────────────────────────────────────────────
         const defs = createSvgEl<SVGDefsElement>("defs");
 
-        const marker = createSvgEl<SVGMarkerElement>("marker");
-        marker.setAttribute("id", "pmt-arrow");
-        marker.setAttribute("viewBox", "0 -5 10 10");
-        marker.setAttribute("refX", String(nodeRadius + 10));
-        marker.setAttribute("refY", "0");
-        marker.setAttribute("markerWidth", "6");
-        marker.setAttribute("markerHeight", "6");
-        marker.setAttribute("orient", "auto");
+        const makeMarker = (id: string, color: string, refX: number): SVGMarkerElement => {
+            const m = createSvgEl<SVGMarkerElement>("marker");
+            m.setAttribute("id", id);
+            m.setAttribute("viewBox", "0 -5 10 10");
+            m.setAttribute("refX", String(refX));
+            m.setAttribute("refY", "0");
+            m.setAttribute("markerWidth", "6");
+            m.setAttribute("markerHeight", "6");
+            m.setAttribute("orient", "auto");
+            const p = createSvgEl<SVGPathElement>("path");
+            p.setAttribute("d", "M0,-5L10,0L0,5");
+            p.setAttribute("fill", color);
+            m.appendChild(p);
+            return m;
+        };
 
-        const arrowPath = createSvgEl<SVGPathElement>("path");
-        arrowPath.setAttribute("d", "M0,-5L10,0L0,5");
-        arrowPath.setAttribute("fill", edgeColor);
-        marker.appendChild(arrowPath);
-        defs.appendChild(marker);
+        defs.appendChild(makeMarker("pmt-arrow", edgeColor, nodeRadius + 10));
+        defs.appendChild(makeMarker("pmt-arrow-back", edgeColor, nodeRadius + 10));
         this.svg.appendChild(defs);
 
         // ── Title ───────────────────────────────────────────────────────────
@@ -350,42 +415,88 @@ export class Visual implements IVisual {
             // Stroke width scales (logarithmically) with transition count
             const strokeWidth = Math.max(1.5, Math.log2(edge.count + 1) * 1.2);
 
-            const line = createSvgEl<SVGLineElement>("line");
-            line.setAttribute("x1", String(source.posX));
-            line.setAttribute("y1", String(source.posY));
-            line.setAttribute("x2", String(target.posX));
-            line.setAttribute("y2", String(target.posY));
-            line.setAttribute("stroke", edgeColor);
-            line.setAttribute("stroke-width", String(strokeWidth));
-            line.setAttribute("marker-end", "url(#pmt-arrow)");
-            edgeGroup.appendChild(line);
+            if (edge.isBackEdge) {
+                // ── Back-edge: curved arc going above the flow ──────────────
+                // Use a quadratic bezier whose control point arcs over the nodes.
+                const arcHeight = Math.max(80, Math.abs(source.posX - target.posX) * 0.45 + 40);
+                const cpX = (source.posX + target.posX) / 2;
+                const cpY = Math.min(source.posY, target.posY) - arcHeight;
 
-            // Mid-point for labels
-            const midX = (source.posX + target.posX) / 2;
-            const midY = (source.posY + target.posY) / 2;
+                const curvePath = createSvgEl<SVGPathElement>("path");
+                curvePath.setAttribute("d",
+                    `M${source.posX},${source.posY} Q${cpX},${cpY} ${target.posX},${target.posY}`);
+                curvePath.setAttribute("fill", "none");
+                curvePath.setAttribute("stroke", edgeColor);
+                curvePath.setAttribute("stroke-width", String(strokeWidth));
+                curvePath.setAttribute("stroke-dasharray", "7,4");
+                curvePath.setAttribute("marker-end", "url(#pmt-arrow-back)");
+                curvePath.setAttribute("class", "pmt-back-edge");
+                edgeGroup.appendChild(curvePath);
 
-            // Transition count label
-            const countLbl = createSvgEl<SVGTextElement>("text");
-            countLbl.setAttribute("x", String(midX));
-            countLbl.setAttribute("y", String(midY - (showTimeMetrics && edge.avgDuration != null ? 8 : 0)));
-            countLbl.setAttribute("text-anchor", "middle");
-            countLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
-            countLbl.setAttribute("fill", "#555");
-            countLbl.setAttribute("class", "pmt-edge-label");
-            countLbl.textContent = `×${edge.count}`;
-            edgeGroup.appendChild(countLbl);
+                // Labels near the arc apex
+                const lblX = cpX;
+                const lblY = cpY - 4;
 
-            // Avg duration label
-            if (showTimeMetrics && edge.avgDuration != null) {
-                const durLbl = createSvgEl<SVGTextElement>("text");
-                durLbl.setAttribute("x", String(midX));
-                durLbl.setAttribute("y", String(midY + fontSize));
-                durLbl.setAttribute("text-anchor", "middle");
-                durLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
-                durLbl.setAttribute("fill", "#777");
-                durLbl.setAttribute("class", "pmt-edge-label");
-                durLbl.textContent = `⌀ ${formatDuration(edge.avgDuration)}`;
-                edgeGroup.appendChild(durLbl);
+                const countLbl = createSvgEl<SVGTextElement>("text");
+                countLbl.setAttribute("x", String(lblX));
+                countLbl.setAttribute("y", String(lblY));
+                countLbl.setAttribute("text-anchor", "middle");
+                countLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
+                countLbl.setAttribute("fill", "#555");
+                countLbl.setAttribute("class", "pmt-edge-label");
+                countLbl.textContent = `×${edge.count}`;
+                edgeGroup.appendChild(countLbl);
+
+                if (showTimeMetrics && edge.avgDuration != null) {
+                    const durLbl = createSvgEl<SVGTextElement>("text");
+                    durLbl.setAttribute("x", String(lblX));
+                    durLbl.setAttribute("y", String(lblY - fontSize - 2));
+                    durLbl.setAttribute("text-anchor", "middle");
+                    durLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
+                    durLbl.setAttribute("fill", "#777");
+                    durLbl.setAttribute("class", "pmt-edge-label");
+                    durLbl.textContent = `⌀ ${formatDuration(edge.avgDuration)}`;
+                    edgeGroup.appendChild(durLbl);
+                }
+            } else {
+                // ── Forward edge: straight line ─────────────────────────────
+                const line = createSvgEl<SVGLineElement>("line");
+                line.setAttribute("x1", String(source.posX));
+                line.setAttribute("y1", String(source.posY));
+                line.setAttribute("x2", String(target.posX));
+                line.setAttribute("y2", String(target.posY));
+                line.setAttribute("stroke", edgeColor);
+                line.setAttribute("stroke-width", String(strokeWidth));
+                line.setAttribute("marker-end", "url(#pmt-arrow)");
+                edgeGroup.appendChild(line);
+
+                // Mid-point for labels
+                const midX = (source.posX + target.posX) / 2;
+                const midY = (source.posY + target.posY) / 2;
+
+                // Transition count label
+                const countLbl = createSvgEl<SVGTextElement>("text");
+                countLbl.setAttribute("x", String(midX));
+                countLbl.setAttribute("y", String(midY - (showTimeMetrics && edge.avgDuration != null ? 8 : 0)));
+                countLbl.setAttribute("text-anchor", "middle");
+                countLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
+                countLbl.setAttribute("fill", "#555");
+                countLbl.setAttribute("class", "pmt-edge-label");
+                countLbl.textContent = `×${edge.count}`;
+                edgeGroup.appendChild(countLbl);
+
+                // Avg duration label
+                if (showTimeMetrics && edge.avgDuration != null) {
+                    const durLbl = createSvgEl<SVGTextElement>("text");
+                    durLbl.setAttribute("x", String(midX));
+                    durLbl.setAttribute("y", String(midY + fontSize));
+                    durLbl.setAttribute("text-anchor", "middle");
+                    durLbl.setAttribute("font-size", String(Math.max(9, fontSize - 1)));
+                    durLbl.setAttribute("fill", "#777");
+                    durLbl.setAttribute("class", "pmt-edge-label");
+                    durLbl.textContent = `⌀ ${formatDuration(edge.avgDuration)}`;
+                    edgeGroup.appendChild(durLbl);
+                }
             }
         });
 
@@ -452,6 +563,7 @@ export class Visual implements IVisual {
         const items: string[] = [
             "● Node = event type",
             "— Edge = transition (×count)",
+            "- - Dashed = loop / back-edge",
         ];
         if (showTimeMetrics) items.push("⌀ Avg time between steps");
 
