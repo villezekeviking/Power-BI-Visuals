@@ -1,0 +1,25 @@
+{
+    "$schema": "https://developer.microsoft.com/json-schemas/core-build/pbiviz.schema.json",
+    "visual": {
+        "name": "processMappingTree",
+        "displayName": "Process Mapping Tree",
+        "guid": "processMappingTree4A2B7C8D9E0F1A2B3C4D5E6F",
+        "visualClassName": "Visual",
+        "version": "1.0.0",
+        "description": "Visualize event-driven process flows. Bind Event ID and Next Step ID columns to auto-build a directed flow diagram showing step sequences, occurrence counts, and average time between steps.",
+        "supportUrl": "",
+        "gitHubUrl": "https://github.com/villezekeviking/Power-BI-Visuals"
+    },
+    "apiVersion": "5.3.0",
+    "author": {
+        "name": "",
+        "email": ""
+    },
+    "assets": {
+        "icon": "assets/icon.png"
+    },
+    "externalJS": [],
+    "style": "style/visual.less",
+    "capabilities": "capabilities.json",
+    "stringResources": []
+}

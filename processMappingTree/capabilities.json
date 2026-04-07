@@ -1,0 +1,97 @@
+{
+    "dataRoles": [
+        {
+            "displayName": "Event ID",
+            "name": "eventId",
+            "kind": "GroupingOrMeasure",
+            "description": "Unique identifier for each event (required)"
+        },
+        {
+            "displayName": "Next Step ID",
+            "name": "nextStepId",
+            "kind": "GroupingOrMeasure",
+            "description": "ID of the next event in the process flow (null = terminal step)"
+        },
+        {
+            "displayName": "Event Name",
+            "name": "eventName",
+            "kind": "GroupingOrMeasure",
+            "description": "Human-readable display name for the event"
+        },
+        {
+            "displayName": "Count",
+            "name": "count",
+            "kind": "Measure",
+            "description": "Number of times this event or transition occurred"
+        },
+        {
+            "displayName": "Avg Duration (ms)",
+            "name": "avgDuration",
+            "kind": "Measure",
+            "description": "Average time in milliseconds between this event and the next step"
+        }
+    ],
+    "dataViewMappings": [
+        {
+            "table": {
+                "rows": {
+                    "select": [
+                        { "for": { "in": "eventId" } },
+                        { "for": { "in": "nextStepId" } },
+                        { "for": { "in": "eventName" } },
+                        { "for": { "in": "count" } },
+                        { "for": { "in": "avgDuration" } }
+                    ]
+                }
+            }
+        }
+    ],
+    "objects": {
+        "nodeSettings": {
+            "displayName": "Node Settings",
+            "properties": {
+                "nodeColor": {
+                    "displayName": "Node Color",
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "nodeRadius": {
+                    "displayName": "Node Size (radius px)",
+                    "type": { "numeric": true }
+                },
+                "showCount": {
+                    "displayName": "Show Event Count",
+                    "type": { "bool": true }
+                }
+            }
+        },
+        "edgeSettings": {
+            "displayName": "Edge Settings",
+            "properties": {
+                "edgeColor": {
+                    "displayName": "Edge Color",
+                    "type": { "fill": { "solid": { "color": true } } }
+                },
+                "showTimeMetrics": {
+                    "displayName": "Show Avg Duration on Edge",
+                    "type": { "bool": true }
+                }
+            }
+        },
+        "labelSettings": {
+            "displayName": "Label Settings",
+            "properties": {
+                "fontSize": {
+                    "displayName": "Font Size (px)",
+                    "type": { "numeric": true }
+                },
+                "fontColor": {
+                    "displayName": "Label Color",
+                    "type": { "fill": { "solid": { "color": true } } }
+                }
+            }
+        }
+    },
+    "sorting": {
+        "default": {}
+    }
+}
