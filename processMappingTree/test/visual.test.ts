@@ -256,6 +256,50 @@ describe("Visual.computeLayout", () => {
         ];
         expect(() => visual.computeLayout(nodes, edges, 800, 600)).not.toThrow();
     });
+
+    it("does not push cycle root to a deeper layer in A→B→C→A", () => {
+        const nodes = buildNodes(["A", "B", "C"]);
+        const edges: ProcessEdge[] = [
+            { sourceId: "A", targetId: "B", count: 1, avgDuration: null },
+            { sourceId: "B", targetId: "C", count: 1, avgDuration: null },
+            { sourceId: "C", targetId: "A", count: 1, avgDuration: null },
+        ];
+        visual.computeLayout(nodes, edges, 800, 600);
+        expect(nodes.get("A")!.layer).toBe(0);
+        expect(nodes.get("B")!.layer).toBe(1);
+        expect(nodes.get("C")!.layer).toBe(2);
+    });
+
+    it("marks only the back-edge in A→B→C→A as isBackEdge", () => {
+        const nodes = buildNodes(["A", "B", "C"]);
+        const edges: ProcessEdge[] = [
+            { sourceId: "A", targetId: "B", count: 1, avgDuration: null },
+            { sourceId: "B", targetId: "C", count: 1, avgDuration: null },
+            { sourceId: "C", targetId: "A", count: 1, avgDuration: null },
+        ];
+        visual.computeLayout(nodes, edges, 800, 600);
+        const backEdges = edges.filter(e => e.isBackEdge);
+        expect(backEdges.length).toBe(1);
+        expect(backEdges[0].sourceId).toBe("C");
+        expect(backEdges[0].targetId).toBe("A");
+        expect(edges.filter(e => !e.isBackEdge).length).toBe(2);
+    });
+
+    it("places C at layer 2 in a diamond A→B→C plus direct A→C (no back-edges)", () => {
+        const nodes = buildNodes(["A", "B", "C"]);
+        const edges: ProcessEdge[] = [
+            { sourceId: "A", targetId: "B", count: 1, avgDuration: null },
+            { sourceId: "B", targetId: "C", count: 1, avgDuration: null },
+            { sourceId: "A", targetId: "C", count: 1, avgDuration: null },
+        ];
+        visual.computeLayout(nodes, edges, 800, 600);
+        expect(nodes.get("A")!.layer).toBe(0);
+        expect(nodes.get("B")!.layer).toBe(1);
+        // C must be at the deeper layer (longest path = 2)
+        expect(nodes.get("C")!.layer).toBe(2);
+        // No back-edges in a pure DAG diamond
+        expect(edges.every(e => !e.isBackEdge)).toBe(true);
+    });
 });
 
 // ---------------------------------------------------------------------------
